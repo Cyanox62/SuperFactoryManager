@@ -136,10 +136,17 @@ setOp           : OVERALL
 //
 // IO HELPERS
 //
-labelAccess     : label (COMMA label)* roundrobin? sidequalifier? slotqualifier?;
+labelAccess     : label (COMMA label)* roundrobin? sidequalifier? slotqualifier? (WHERE where)?;
 roundrobin      : ROUND ROBIN BY (LABEL | BLOCK);
 label           : (identifier)   #RawLabel
                 | string                  #StringLabel
+                ;
+
+where           : LPAREN where RPAREN             # WhereParen
+                | NOT where                       # WhereNegation
+                | where AND where                 # WhereConjunction
+                | where OR where                  # WhereDisjunction
+                | resourcecomparison              # WhereComparison
                 ;
 
 identifier : (IDENTIFIER | REDSTONE) ;

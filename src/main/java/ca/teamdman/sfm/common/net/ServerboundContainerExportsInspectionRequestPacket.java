@@ -189,7 +189,8 @@ public record ServerboundContainerExportsInspectionRequestPacket(
                                                        ? EnumSet.noneOf(Direction.class)
                                                        : EnumSet.of(direction)),
                                 NumberRangeSet.MAX_RANGE,
-                                RoundRobin.disabled()
+                                RoundRobin.disabled(),
+                                WhereStatement.ALWAYS_TRUE
                         ),
                         new ResourceLimits(
                                 resourceLimitList.stream().distinct().toList(),

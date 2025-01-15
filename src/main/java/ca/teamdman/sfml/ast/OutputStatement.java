@@ -1,23 +1,19 @@
 package ca.teamdman.sfml.ast;
 
 import ca.teamdman.sfm.SFM;
-import ca.teamdman.sfm.common.localization.LocalizationKeys;
+import ca.teamdman.sfm.common.Constants.LocalizationKeys;
 import ca.teamdman.sfm.common.program.*;
 import ca.teamdman.sfm.common.registry.SFMResourceTypes;
 import ca.teamdman.sfm.common.resourcetype.ResourceType;
-import com.mojang.math.Constants;
+import com.mojang.datafixers.util.Pair;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.component.DataComponents;
-import net.minecraft.world.item.ItemStack;
 
-import java.util.ArrayDeque;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
-import static ca.teamdman.sfm.common.localization.LocalizationKeys.*;
+import static ca.teamdman.sfm.common.Constants.LocalizationKeys.*;
 
 public class OutputStatement implements IOStatement {
     private final LabelAccess labelAccess;
@@ -345,68 +341,54 @@ public class OutputStatement implements IOStatement {
     ) {
         context.getLogger().debug(x -> x.accept(LOG_PROGRAM_TICK_IO_STATEMENT_GATHER_SLOTS.get(toStringPretty())));
 
+        Set<ResourceType> referencedResourceTypes = new HashSet<>(resourceLimits.getReferencedResourceTypes());
+
+        List<IOutputResourceTracker> outputTracker = null;
+
         if (!each) {
             context.getLogger().debug(x -> x.accept(LOG_PROGRAM_TICK_IO_STATEMENT_GATHER_SLOTS_NOT_EACH.get()));
-            // create a single list of trackers to be shared between all limited slots
-            List<IOutputResourceTracker> outputTracker = resourceLimits.createOutputTrackers();
-            for (var resourceType : resourceLimits.getReferencedResourceTypes()) {
-                context
-                        .getLogger()
-                        .debug(x -> x.accept(LOG_PROGRAM_TICK_IO_STATEMENT_GATHER_SLOTS_FOR_RESOURCE_TYPE.get(
-                                resourceType.displayAsCapabilityClass(),
-                                resourceType.displayAsCapabilityClass()
-                        )));
-                resourceType.forEachCapability(context, labelAccess, (
-                        (label, pos, direction, cap) -> gatherSlotsForCap(
-                                context,
-                                (ResourceType<Object, Object, Object>) resourceType,
-                                label,
-                                pos,
-                                direction,
-                                cap,
-                                outputTracker,
-                                slotConsumer
-                        )
-                ));
-            }
+            outputTracker = resourceLimits.createOutputTrackers();
         } else {
             context.getLogger().debug(x -> x.accept(LOG_PROGRAM_TICK_IO_STATEMENT_GATHER_SLOTS_EACH.get()));
-            for (var resourceType : resourceLimits.getReferencedResourceTypes()) {
-                context
-                        .getLogger()
-                        .debug(x -> x.accept(LOG_PROGRAM_TICK_IO_STATEMENT_GATHER_SLOTS_FOR_RESOURCE_TYPE.get(
-                                resourceType.displayAsCapabilityClass(),
-                                resourceType.displayAsCapabilityClass()
-                        )));
-                resourceType.forEachCapability(context, labelAccess, (label, pos, direction, cap) -> {
-                    // create a new list of trackers for each limited slot
-                    List<IOutputResourceTracker> outputTracker = resourceLimits.createOutputTrackers();
-                    gatherSlotsForCap(
-                            context,
-                            (ResourceType<Object, Object, Object>) resourceType,
-                            label,
-                            pos,
-                            direction,
-                            cap,
-                            outputTracker,
-                            slotConsumer
-                    );
-                });
+        }
+
+        for (var labelPosPair : getBlocksFromLabels(context)) {
+            // Tracker for block
+            if (each) {
+                outputTracker = resourceLimits.createOutputTrackers();
+            }
+            List<LimitedOutputSlot<?, ?, ?>> limitedOutputSlotList = new ArrayList<>();
+            HashMap<Object, Long> resourceTable = new HashMap<>();
+            // Loop over capability
+            for (var type : referencedResourceTypes) {
+                // Get slots to loop over
+                List<IOutputResourceTracker> finalOutputTracker = outputTracker;
+                type.forCapabilityOfBlock(context, labelAccess.directions(), labelPosPair, (label, pos, direction, cap) -> gatherSlotsForCap(
+                        context,
+                        (ResourceType<Object, Object, Object>) type,
+                        label, pos, direction, cap,
+                        finalOutputTracker,
+                        limitedOutputSlotList,
+                        resourceTable
+                ));
+            }
+
+            if (labelAccess().where().test(context, resourceTable)) {
+                for (var slotList : limitedOutputSlotList) {
+                    slotConsumer.accept(slotList);
+                }
             }
         }
     }
 
-    @Override
     public LabelAccess labelAccess() {
         return labelAccess;
     }
 
-    @Override
     public ResourceLimits resourceLimits() {
         return resourceLimits;
     }
 
-    @Override
     public boolean each() {
         return each;
     }
@@ -462,7 +444,8 @@ public class OutputStatement implements IOStatement {
             Direction direction,
             CAP capability,
             List<IOutputResourceTracker> trackers,
-            Consumer<LimitedOutputSlot<?, ?, ?>> acceptor
+            List<LimitedOutputSlot<?, ?, ?>> limitedOutputSlotList,
+            HashMap<Object, Long> resourceTable
     ) {
         context
                 .getLogger()
@@ -472,9 +455,16 @@ public class OutputStatement implements IOStatement {
             if (labelAccess.slots().contains(slot)) {
                 STACK stack = type.getStackInSlot(capability, slot);
                 boolean shouldCreateSlot = shouldCreateSlot(type, capability, stack, slot);
+                if (type.matchesCapabilityType(capability)) {
+                    // Add items to resourceTable
+                    resourceTable.put(stack, resourceTable.getOrDefault(stack, 0L) + type.getAmount(stack));
+                }
+                //noinspection rawtypes
                 for (IOutputResourceTracker tracker : trackers) {
+                    // we don't also test the tracker because we can deposit into empty slots
                     if (tracker.matchesCapabilityType(capability)) {
                         //always update retention observations even if !shouldCreateSlot
+                        //noinspection unchecked
                         tracker.updateRetentionObservation(type, stack);
 
                         if (shouldCreateSlot) {
@@ -485,7 +475,8 @@ public class OutputStatement implements IOStatement {
                                             stack,
                                             tracker.toString()
                                     )));
-                            acceptor.accept(LimitedOutputSlotObjectPool.acquire(
+                            //noinspection unchecked
+                            limitedOutputSlotList.add(LimitedOutputSlotObjectPool.acquire(
                                     label,
                                     pos,
                                     direction,
@@ -501,10 +492,10 @@ public class OutputStatement implements IOStatement {
                                     .debug(x -> x.accept(LocalizationKeys.LOG_PROGRAM_TICK_IO_STATEMENT_GATHER_SLOTS_SLOT_SHOULD_NOT_CREATE.get(
                                             finalSlot,
                                             type.getAmount(stack)
-                                            + " of "
-                                            + Math.min(type.getMaxStackSize(stack), type.getMaxStackSizeForSlot(capability, finalSlot))
-                                            + " "
-                                            + type.getItem(stack)
+                                                    + " of "
+                                                    + type.getMaxStackSizeForSlot(capability, finalSlot)
+                                                    + " "
+                                                    + type.getItem(stack)
                                     )));
                         }
                     }
@@ -518,31 +509,24 @@ public class OutputStatement implements IOStatement {
         }
     }
 
-    @SuppressWarnings("RedundantIfStatement")
     private <STACK, ITEM, CAP> boolean shouldCreateSlot(
             ResourceType<STACK, ITEM, CAP> type,
             CAP cap,
             STACK stack,
             int slot
     ) {
-        // Chest holding dirt: maxStackSizeForStack=64 maxStackSizeForSlot=99
-        // Bin holding sticks: maxStackSizeForStack=64 maxStackSizeForSlot=102400
-        long amount = type.getAmount(stack);
-        long maxStackSizeForSlot = type.getMaxStackSizeForSlot(cap, slot);
-        if (maxStackSizeForSlot > 99) {
-            // If the slot is bigger than normal, ignore stack size
-            // This is for barrels/bins/drawers
-            return amount < maxStackSizeForSlot;
-        }
-        if (amount >= maxStackSizeForSlot) {
-            // Respect traditional slot limits
-            return false;
-        }
-        long maxStackSizeForStack = type.getMaxStackSize(stack);
-        if (amount >= maxStackSizeForStack) {
-            // Respect stack limits
-            return false;
-        }
-        return true;
+        // we check the stack limit on the capability
+        // this is to accommodate drawers/bins/barrels/black hole units/whatever
+        // those blocks hold many more items than normal in a single stack
+        return type.getAmount(stack) < type.getMaxStackSizeForSlot(cap, slot);
+    }
+
+    private List<Pair<Label, BlockPos>> getBlocksFromLabels(ProgramContext context) {
+        RoundRobin roundRobin = labelAccess.roundRobin();
+        LabelPositionHolder labelPositionHolder = context.getLabelPositionHolder();
+        return roundRobin.getPositionsForLabels(
+                labelAccess,
+                labelPositionHolder
+        );
     }
 }

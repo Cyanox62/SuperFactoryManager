@@ -1,5 +1,6 @@
 package ca.teamdman.sfm.common.resourcetype;
 
+import ca.teamdman.sfm.common.Constants;
 import ca.teamdman.sfm.common.cablenetwork.CableNetwork;
 import ca.teamdman.sfm.common.localization.LocalizationKeys;
 import ca.teamdman.sfm.common.program.CapabilityConsumer;
@@ -156,6 +157,46 @@ public abstract class ResourceType<STACK, ITEM, CAP> {
                                 dir
                         )));
             }
+        }
+    }
+
+    public void forCapabilityOfBlock(
+            ProgramContext programContext,
+            DirectionQualifier directionQualifier,
+            Pair<Label, BlockPos> labelPosPair,
+            CapabilityConsumer<CAP> consumer
+    ) {
+        CableNetwork network = programContext.getNetwork();
+
+        var label = labelPosPair.getFirst();
+        var blockPos =  labelPosPair.getSecond();
+
+        for (Direction dir : (Iterable<? extends Direction>) directionQualifier.stream()::iterator) {
+            // Get capability from the network
+            var maybeCap = network
+                    .getCapability(CAPABILITY_KIND, blockPos, dir, programContext.getLogger());
+            if (maybeCap != null) {
+                CAP cap = maybeCap.getCapability();
+                if (cap != null) {
+                    programContext
+                            .getLogger()
+                            .debug(x -> x.accept(Constants.LocalizationKeys.LOG_RESOURCE_TYPE_GET_CAPABILITIES_CAP_PRESENT.get(
+                                    displayAsCapabilityClass(),
+                                    blockPos,
+                                    dir
+                            )));
+                    consumer.accept(label, blockPos, dir, cap);
+                    continue;
+                }
+            }
+            // Log error
+            programContext
+                    .getLogger()
+                    .error(x -> x.accept(Constants.LocalizationKeys.LOG_RESOURCE_TYPE_GET_CAPABILITIES_CAP_NOT_PRESENT.get(
+                            displayAsCapabilityClass(),
+                            blockPos,
+                            dir
+                    )));
         }
     }
 
